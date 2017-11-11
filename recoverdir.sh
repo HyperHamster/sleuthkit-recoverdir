@@ -73,7 +73,7 @@ while read -r; do
     done
     if [[ $skip_rlvl ]]; then
         if [[ $rlvl -le $skip_rlvl ]]; then
-            unset skip_level
+            unset skip_rlvl
         else
             continue
         fi
