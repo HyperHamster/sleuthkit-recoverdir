@@ -5,10 +5,6 @@ set -o noglob
 # recoverdir.sh
 #
 
-# Examples
-# fls -ur /dev/sda3 3407894 | sed -e 's/:.*//' -e 's/\+* *.\/. //' | less
-# icat -r -f ext4 /dev/sda3 3408017 > black-waves.png
-
 # Parse Options
 opt_regex='^-[A-Za-z]+$'
 for param in "$@"; do
@@ -65,6 +61,8 @@ format_entry() {
 dirs=()
 while read -r; do
     dir="$(format_entry -r "$REPLY")"
+    
+    # Exclude Directories
     rlvl="$(echo "$dir" | cut -d/ -f1)"
     dir_inode="$(echo "$dir" | cut -d/ -f3)"
     for inode in "${except_inodes[@]}"; do
@@ -80,6 +78,7 @@ while read -r; do
             continue
         fi
     fi
+    
     dirs+=("$dir")
     echo "DIR $dir"
 done < <(fls -Dru -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
