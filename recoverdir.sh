@@ -84,7 +84,6 @@ while read -r; do
     echo "DIR $dir"
 done < <(fls -Dru -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
 
-exit
 # Catalogue Files
 files=()
 while read -r; do
