@@ -1,6 +1,6 @@
 ## recoverdir.sh
 #### USAGE
-    recoverdir.sh IMAGE_FILE BASE_INODE [EXCEPT_INODE ...]
+    recoverdir.sh IMAGE BASE_INODE [EXCEPT_INODE]...
 #### OPTIONS
     -h    Print this help message, then exit successfully.
     -R    Do not recover files, instead exit successfully.
