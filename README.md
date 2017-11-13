@@ -1,4 +1,4 @@
-## recoverdir.sh
+## recoverdir.sh -h
 #### USAGE
     recoverdir.sh IMAGE BASE_INODE [EXCEPT_INODE]...
 #### OPTIONS
