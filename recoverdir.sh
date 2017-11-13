@@ -12,24 +12,38 @@ b() {
 
 # Calculate Time Elapsed
 stopwatch() {
-    local date_format='%s %N'
+    local date_format='%s'
     if [[ $1 == -s ]]; then
-        stopwatch_start=($(date +"$date_format"))
+        stopwatch_start="$(date +"$date_format")"
         return 0
     fi
-    local stop=($(date +"$date_format"))
-    local start=("${stopwatch_start[@]}")
-    local n_difference="$((${stop[1]} - ${start[1]}))"
-    local n="$((n_difference / 10000000))"
-    local difference="$((${stop[0]} - ${start[0]}))"
+    local stop="$(date +"$date_format")"
+    local start="$stopwatch_start"
+    local difference="$((stop - start))"
     local s="$((difference % 60))"
+    [[ ${#s} -lt 2 ]] && s="0$s"
     local m="$((difference / 60))"
-    [[ $m -eq 0 ]] && unset m
+    [[ ${#m} -lt 2 ]] && m="0$m"
     local h="$((m / 60))"
-    [[ $h -eq 0 ]] && unset h
-    echo "$(b TIME) $h${h:+:}$m${m:+:}$s.$n"
+    [[ ${#h} -lt 2 ]] && h="0$h"
+    echo "$(b TIME) $h:$m:$s"
 }
 stopwatch -s
+
+# Print Help Message
+help_message="\
+$(b USAGE)
+    recoverdir.sh IMAGE_FILE BASE_INODE [EXCEPT_INODE ...]
+$(b OPTIONS)
+    -h  Print this help message, then exit successfully.
+    -R  Do not recover files, instead exit successfully.
+    -s  Calculate the size of all catalogued files and directories.
+    -q  Do not print catalogue entries, time elapsed, or recovery operations.
+    -b  Do not recover files or directories deeper than base level."
+print_help() {
+    echo -e "$help_message"
+    exit 0
+}
 
 # Parse Options
 opt_regex='^-[A-Za-z]+$'
@@ -43,10 +57,13 @@ for param in "$@"; do
         set -- ${*%$param}
     fi
 done
+[[ $opts == *h* ]] && print_help
 echo "$(b OPTS) -${opts:--}"
 [[ $opts == *R* ]] && no_recover=0
 [[ $opts == *s* ]] && calc_size=0
 [[ $opts == *q* ]] && quiet=0
+[[ $opts == *b* ]] && base_only=0
+
 
 # Handle Errors
 error() {
@@ -88,6 +105,7 @@ format_entry() {
 }
 
 # Catalogue Directories
+[[ $base_only ]] && fls_opts='Du'
 dirs=()
 while read -r; do
     dir="$(format_entry -r "$REPLY")"
@@ -111,7 +129,8 @@ while read -r; do
     
     dirs+=("$dir")
     [[ ! $quiet ]] && echo "$(b DIR) $dir"
-done < <(fls -Dru -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
+done < <(fls -"${fls_opts:-Dru}" -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
+
 
 # Catalogue Files
 files=()
@@ -121,23 +140,23 @@ while read -r; do
     [[ ! $quiet ]] && echo "$(b FILE) $file"
 done < <(fls -Fu -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
 
-newline=$'\n'
-dir_files=()
-for dir in "${dirs[@]}"; do
-    dir_inode="$(echo "$dir" | cut -d/ -f3)"
-    while read -r; do
-        file="$(format_entry "$REPLY")"
-        declare dir_files["$dir_inode"]="${dir_files[$dir_inode]}$file$newline"
-        [[ ! $quiet ]] && echo "$(b DIR) $dir $(b FILE) $file"
-    done < <(fls -Fu -f "$image_fstype" -i "$image_format" "$image" "$dir_inode")
-done
+if [[ ! $base_only ]]; then
+    newline=$'\n'
+    dir_files=()
+    for dir in "${dirs[@]}"; do
+        dir_inode="$(echo "$dir" | cut -d/ -f3)"
+        while read -r; do
+            file="$(format_entry "$REPLY")"
+            declare dir_files["$dir_inode"]="${dir_files[$dir_inode]}$file$newline"
+            [[ ! $quiet ]] && echo "$(b DIR) $dir $(b FILE) $file"
+        done < <(fls -Fu -f "$image_fstype" -i "$image_format" "$image" "$dir_inode")
+    done
+fi
 
-stopwatch
+[[ ! $quiet ]] && stopwatch
 
 # Calculate Total Size of Catalogued Files
 if [[ $calc_size ]]; then
-    #stopwatch -s
-    
     total_size=0
     for file in "${files[@]}"; do
         file_name="$(echo "$file" | cut -d/ -f1)"
@@ -172,12 +191,11 @@ if [[ $calc_size ]]; then
     bil=1000000000
     echo "$(b TSIZE) $total_size ($((total_size / bil)).$(echo "$((total_size % bil))" | cut -c -2) GB)"
     
-    stopwatch
+    [[ ! $quiet ]] && stopwatch
 fi
 
 # Recover Base Files
 [[ $no_recover ]] && exit 0
-#stopwatch -s
 
 for file in "${files[@]}"; do
     file_name="$(echo "$file" | cut -d/ -f1)"
@@ -221,5 +239,5 @@ for dir in "${dirs[@]}"; do
     last_rlvl="$rlvl"
 done
 
-stopwatch
+[[ ! $quiet ]] && stopwatch
 
