@@ -34,12 +34,23 @@ stopwatch -s
 help_message="\
 $(b USAGE)
     recoverdir.sh IMAGE BASE_INODE [EXCEPT_INODE]...
+
 $(b OPTIONS)
     -h      Print this help message, then exit successfully.
     -R      Do not recover files, instead exit successfully.
     -s      Calculate the size of all catalogued files and directories.
     -q      Do not print catalogue entries, time elapsed, or recovery operations.
-    -b      Do not recover files or directories deeper than base level."
+    -b      Do not recover files or directories deeper than base level.
+    -c      Use cache file if one exists, generate one if not.
+
+$(b NOTES)
+    Options may be clustered.
+    Options may be positioned anywhere.
+
+$(b AUTHOR)
+    Written by HyperHamster.
+"
+
 print_help() {
     echo -e "$help_message"
     exit 0
@@ -63,12 +74,20 @@ echo "$(b OPTS) -${opts:--}"
 [[ $opts == *s* ]] && calc_size=0
 [[ $opts == *q* ]] && quiet=0
 [[ $opts == *b* ]] && base_only=0
+[[ $opts == *c* ]] && cache_file=0
 
 
 # Handle Errors
 error() {
-    echo -e "\e[31;7mERROR\e[27m $*\e[0m" 1>&2
-    exit 1
+    local color
+    local level
+    if [[ $1 == -w ]]; then
+        shift
+        color=33
+        level='WARN'
+    fi
+    echo -e "\e[${color:-31};7m${level:=ERROR}\e[27m $*\e[0m" 1>&2
+    [[ $level == ERROR ]] && exit 1
 }
 
 # Parse Arguments
@@ -114,55 +133,68 @@ format_entry() {
 }
 
 # Catalogue Directories
-[[ $base_only ]] && fls_opts='Du'
-dirs=()
-while read -r; do
-    dir="$(format_entry -r "$REPLY")"
-    
-    # Exclude Directories
-    rlvl="$(echo "$dir" | cut -d/ -f1)"
-    dir_inode="$(echo "$dir" | cut -d/ -f3)"
-    for inode in "${except_inodes[@]}"; do
-        if [[ $dir_inode -eq $inode ]]; then
-            skip_rlvl="$rlvl"
-            continue 2
-        fi
-    done
-    if [[ $skip_rlvl ]]; then
-        if [[ $rlvl -le $skip_rlvl ]]; then
-            unset skip_rlvl
-        else
-            continue
-        fi
+newline=$'\n'
+
+if [[ $cache_file ]]; then
+    cache_file_path="$PWD/.${image//[^A-Za-z0-9_]/_}$base_inode${except_inodes[*]// }"
+    if [[ -r $cache_file_path ]]; then
+        source "$cache_file_path"
+        cache_file_found=0
     fi
-    
-    dirs+=("$dir")
-    [[ ! $quiet ]] && echo "$(b DIR) $dir"
-done < <(fls -"${fls_opts:-Dru}" -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
-
-
-# Catalogue Files
-files=()
-while read -r; do
-    file="$(format_entry "$REPLY")"
-    files+=("$file")
-    [[ ! $quiet ]] && echo "$(b FILE) $file"
-done < <(fls -Fu -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
-
-if [[ ! $base_only ]]; then
-    newline=$'\n'
-    dir_files=()
-    for dir in "${dirs[@]}"; do
-        dir_inode="$(echo "$dir" | cut -d/ -f3)"
-        while read -r; do
-            file="$(format_entry "$REPLY")"
-            declare dir_files["$dir_inode"]="${dir_files[$dir_inode]}$file$newline"
-            [[ ! $quiet ]] && echo "$(b DIR) $dir $(b FILE) $file"
-        done < <(fls -Fu -f "$image_fstype" -i "$image_format" "$image" "$dir_inode")
-    done
 fi
 
-[[ ! $quiet ]] && stopwatch
+if [[ ! $cache_file_found ]]; then
+    [[ $base_only ]] && fls_opts='Du'
+    dirs=()
+    while read -r; do
+        dir="$(format_entry -r "$REPLY")"
+        
+        # Exclude Directories
+        rlvl="$(echo "$dir" | cut -d/ -f1)"
+        dir_inode="$(echo "$dir" | cut -d/ -f3)"
+        for inode in "${except_inodes[@]}"; do
+            if [[ $dir_inode -eq $inode ]]; then
+                skip_rlvl="$rlvl"
+                continue 2
+            fi
+        done
+        if [[ $skip_rlvl ]]; then
+            if [[ $rlvl -le $skip_rlvl ]]; then
+                unset skip_rlvl
+            else
+                continue
+            fi
+        fi
+        
+        dirs+=("$dir")
+        [[ ! $quiet ]] && echo "$(b DIR) $dir"
+    done < <(fls -"${fls_opts:-Dru}" -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
+
+
+    # Catalogue Files
+    files=()
+    while read -r; do
+        file="$(format_entry "$REPLY")"
+        files+=("$file")
+        [[ ! $quiet ]] && echo "$(b FILE) $file"
+    done < <(fls -Fu -f "$image_fstype" -i "$image_format" "$image" "$base_inode")
+
+    if [[ ! $base_only ]]; then
+        dir_files=()
+        for dir in "${dirs[@]}"; do
+            dir_inode="$(echo "$dir" | cut -d/ -f3)"
+            while read -r; do
+                file="$(format_entry "$REPLY")"
+                declare dir_files["$dir_inode"]="${dir_files[$dir_inode]}$file$newline"
+                [[ ! $quiet ]] && echo "$(b DIR) $dir $(b FILE) $file"
+            done < <(fls -Fu -f "$image_fstype" -i "$image_format" "$image" "$dir_inode")
+        done
+    fi
+    
+    [[ $cache_file ]] && declare -p 'dirs' 'files' 'dir_files' 2>/dev/null > "$cache_file_path"
+    
+    [[ ! $quiet ]] && stopwatch
+fi
 
 # Calculate Total Size of Catalogued Files
 if [[ $calc_size ]]; then
@@ -225,13 +257,13 @@ fi
 # Recover Base Files
 [[ $no_recover ]] && exit 0
 
-mkdir -p "$base_dir" || error 'PERMISSION DENIED'
+mkdir -p "$base_dir" || error -w 'PERMISSION DENIED'
 [[ ! $quiet ]] && echo "$(b MKDIR) ./$base_dir_name"
 
 for file in "${files[@]}"; do
     file_name="$(echo "$file" | cut -d/ -f1)"
     file_inode="$(echo "$file" | cut -d/ -f2)"
-    icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$base_dir/$file_name" || error 'PERMISSION DENIED'
+    icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$base_dir/$file_name" || error -w 'PERMISSION DENIED'
     [[ ! $quiet ]] && echo "$(b RFILE) ./$base_dir_name/$file_name"
 done
 
@@ -254,7 +286,7 @@ for dir in "${dirs[@]}"; do
         done
         make_dir="$make_dir/$dir_name"
     fi
-    mkdir -p "$make_dir" || error 'PERMISSION DENIED'
+    mkdir -p "$make_dir" || error -w 'PERMISSION DENIED'
     [[ ! $quiet ]] && echo "$(b MKDIR) ${make_dir/#$PWD/.}"
     
     # Recover Directory Files
@@ -262,7 +294,7 @@ for dir in "${dirs[@]}"; do
     for file in ${dir_files[$dir_inode]}; do
         file_name="$(echo "$file" | cut -d/ -f1)"
         file_inode="$(echo "$file" | cut -d/ -f2)"
-        icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$make_dir/$file_name" || error 'PERMISSION DENIED'
+        icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$make_dir/$file_name" || error -w 'PERMISSION DENIED'
         [[ ! $quiet ]] && echo "$(b RFILE) ${make_dir/#$PWD/.}/$file_name"
     done
     unset IFS
