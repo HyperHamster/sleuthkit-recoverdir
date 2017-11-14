@@ -67,15 +67,15 @@ echo "$(b OPTS) -${opts:--}"
 
 # Handle Errors
 error() {
-    echo -e "\e[31;7m$*\e[0m" 1>&2
+    echo -e "\e[31;7mERROR\e[27m $*\e[0m" 1>&2
     exit 1
 }
 
 # Parse Arguments
-[[ $# -lt 2 ]] && error 'ARGS ERROR'
+#[[ $# -lt 2 ]] && error 'ARGS INCOMPLETE'
 
 image="$1"
-[[ ! -r $image ]] && error 'IMAGE ERROR'
+[[ ! -r $image ]] && error 'INVALID IMAGE'
 image_fstype="$(fsstat -t "$image")"
 image_format="$(img_stat -t "$image")"
 echo "$(b IMAGE) $image $(b FSTYPE) $image_fstype $(b FORMAT) $image_format"
@@ -84,12 +84,20 @@ inode_regex='^[0-9]+$'
 base_inode="$2"
 except_inodes=("${@:3}")
 for inode in "$base_inode" "${except_inodes[@]}"; do
-    [[ ! $inode =~ $inode_regex ]] && error 'INODE ERROR'
+    [[ ! $inode =~ $inode_regex ]] && error 'INVALID INODE'
 done
 echo "$(b INODE) $base_inode${except_inodes[@]:+ $(b EXCEPT) }${except_inodes[*]}"
 
-base_dir="$PWD"
-[[ ! -w $base_dir ]] && error 'DIR ERROR'
+parent_inode="$(fls -au -f "$image_fstype" -i "$image_format" "$image" "$base_inode" | grep '\.\.' | grep -Po '(?<=./. ).*(?=:\t)')"
+# sed -e 's/.*.\/. \(.*\):\t.*/\1/'
+# sed -e 's/:\t.*//' -e 's/.*.\/. //'
+#echo "PI $parent_inode"
+#base_dir_name="$(ffind -u -f "$image_fstype" -i "$image_format" "$image" "$base_inode")"
+base_dir_name="$(fls -u -f "$image_fstype" -i "$image_format" "$image" "$parent_inode" | grep "$base_inode" | cut -f2)"
+#echo "BDN $base_dir_name"
+#base_dir_name="${base_dir_name##*/}"
+base_dir="$PWD/$base_dir_name"
+#echo "BD $base_dir"
 
 # Format Catalogue Entries
 # (RECURSION_LEVEL/)NAME/INODE
@@ -101,7 +109,8 @@ format_entry() {
         pluses="${*//[^+]}"
         rlvl="${#pluses}/"
     fi
-    echo -n "$rlvl$(echo "$*" | cut -f2)/$(echo "$*" | sed -e 's/:.*//' -e 's/\+* *.\/. //')"
+    echo -n "$rlvl$(echo "$*" | cut -f2)/$(echo "$*" | grep -Po '(?<=./. ).*(?=:\t)')"
+    # sed -e 's/:.*//' -e 's/\+* *.\/. //'
 }
 
 # Catalogue Directories
@@ -157,20 +166,40 @@ fi
 
 # Calculate Total Size of Catalogued Files
 if [[ $calc_size ]]; then
+    format_size() {
+        local size="$1"
+        local human_readable
+        if [[ $size -ge 1000 ]]; then
+            local divisor
+            local unit
+            if [[ $size -ge $((1000**3)) ]]; then
+                divisor=$((1000**3))
+                unit='GB'
+            elif [[ $size -ge $((1000**2)) ]]; then
+                divisor=$((1000**2))
+                unit='MB'
+            fi
+            local quotient=$((size / ${divisor:=1000}))
+            local remainder=$((size % divisor))
+            human_readable=" ($quotient.${remainder:0:1} ${unit:-KB})"
+        fi
+        echo -n "$size$human_readable"
+    }
+    
     total_size=0
     for file in "${files[@]}"; do
         file_name="$(echo "$file" | cut -d/ -f1)"
         file_inode="$(echo "$file" | cut -d/ -f2)"
         file_size="$(istat -f "$image_fstype" -i "$image_format" "$image" "$file_inode" | grep '^size:' | cut -d' ' -f2)"
         ((total_size += file_size))
-        echo "$(b FSIZE) $file_size $(b FNAME) $file_name"
+        echo "$(b FSIZE) $(format_size $file_size) $(b FNAME) $file_name"
     done
     dir_size=-1
     for dir in "${dirs[@]}"; do
         rlvl="$(echo "$dir" | cut -d/ -f1)"
         dir_inode="$(echo "$dir" | cut -d/ -f3)"
         if [[ $rlvl -eq 0 && $dir_size -ne -1 ]]; then
-            echo "$(b DSIZE) $dir_size $(b DNAME) $dir_name"
+            echo "$(b DSIZE) $(format_size $dir_size) $(b DNAME) $dir_name"
             dir_name="$(echo "$dir" | cut -d/ -f2)"
             dir_size=0
         elif [[ $dir_size -eq -1 ]]; then
@@ -187,9 +216,8 @@ if [[ $calc_size ]]; then
         done
         unset IFS
     done
-    [[ $dir_size -ne -1 ]] && echo "$(b DSIZE) $dir_size $(b DNAME) $dir_name"
-    bil=1000000000
-    echo "$(b TSIZE) $total_size ($((total_size / bil)).$(echo "$((total_size % bil))" | cut -c -2) GB)"
+    [[ $dir_size -ne -1 ]] && echo "$(b DSIZE) $(format_size $dir_size) $(b DNAME) $dir_name"
+    echo "$(b TSIZE) $(format_size $total_size)"
     
     [[ ! $quiet ]] && stopwatch
 fi
@@ -197,11 +225,14 @@ fi
 # Recover Base Files
 [[ $no_recover ]] && exit 0
 
+mkdir -p "$base_dir" || error 'PERMISSION DENIED'
+[[ ! $quiet ]] && echo "$(b MKDIR) ./$base_dir_name"
+
 for file in "${files[@]}"; do
     file_name="$(echo "$file" | cut -d/ -f1)"
     file_inode="$(echo "$file" | cut -d/ -f2)"
-    icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$base_dir/$file_name"
-    [[ ! $quiet ]] && echo "$(b RFILE) ./$file_name"
+    icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$base_dir/$file_name" || error 'PERMISSION DENIED'
+    [[ ! $quiet ]] && echo "$(b RFILE) ./$base_dir_name/$file_name"
 done
 
 # Reconstruct Directories
@@ -223,16 +254,16 @@ for dir in "${dirs[@]}"; do
         done
         make_dir="$make_dir/$dir_name"
     fi
-    mkdir -p "$make_dir"
-    [[ ! $quiet ]] && echo "$(b MKDIR) ${make_dir/#$base_dir/.}"
+    mkdir -p "$make_dir" || error 'PERMISSION DENIED'
+    [[ ! $quiet ]] && echo "$(b MKDIR) ${make_dir/#$PWD/.}"
     
     # Recover Directory Files
     IFS="$newline"
     for file in ${dir_files[$dir_inode]}; do
         file_name="$(echo "$file" | cut -d/ -f1)"
         file_inode="$(echo "$file" | cut -d/ -f2)"
-        icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$make_dir/$file_name"
-        [[ ! $quiet ]] && echo "$(b RFILE) ${make_dir/#$base_dir/.}/$file_name"
+        icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$make_dir/$file_name" || error 'PERMISSION DENIED'
+        [[ ! $quiet ]] && echo "$(b RFILE) ${make_dir/#$PWD/.}/$file_name"
     done
     unset IFS
     
