@@ -85,8 +85,9 @@ error() {
         shift
         color=33
         level='WARN'
+        echo_opts='ne'
     fi
-    echo -e "\e[${color:-31};7m${level:=ERROR}\e[27m $*\e[0m" 1>&2
+    echo -"${echo_opts:-e}" "\e[${color:-31};7m${level:=ERROR}\e[27m $*\e[39m${echo_opts:+ }" 1>&2
     [[ $level == ERROR ]] && exit 1
 }
 
@@ -113,6 +114,7 @@ parent_inode="$(fls -au -f "$image_fstype" -i "$image_format" "$image" "$base_in
 #echo "PI $parent_inode"
 #base_dir_name="$(ffind -u -f "$image_fstype" -i "$image_format" "$image" "$base_inode")"
 base_dir_name="$(fls -u -f "$image_fstype" -i "$image_format" "$image" "$parent_inode" | grep "$base_inode" | cut -f2)"
+echo "$(b NAME) $base_dir_name"
 #echo "BDN $base_dir_name"
 #base_dir_name="${base_dir_name##*/}"
 base_dir="$PWD/$base_dir_name"
@@ -123,12 +125,16 @@ base_dir="$PWD/$base_dir_name"
 format_entry() {
     local pluses
     local rlvl
+    local meta="${*%%:*}"
     if [[ $1 == -r ]]; then
         shift
-        pluses="${*//[^+]}"
+        pluses="${meta//[^+]}"
         rlvl="${#pluses}/"
     fi
-    echo -n "$rlvl$(echo "$*" | cut -f2)/$(echo "$*" | grep -Po '(?<=./. ).*(?=:\t)')"
+    local inode="${meta##* }"
+    local name="${*#*$'\t'}"
+    #echo -n "$rlvl$(echo "$*" | cut -f2)/$(echo "$*" | grep -Po '(?<=./. ).*(?=:\t)')"
+    echo -n "$rlvl$name/$inode"
     # sed -e 's/:.*//' -e 's/\+* *.\/. //'
 }
 
@@ -136,7 +142,8 @@ format_entry() {
 newline=$'\n'
 
 if [[ $cache_file ]]; then
-    cache_file_path="$PWD/.${image//[^A-Za-z0-9_]/_}$base_inode${except_inodes[*]// }"
+    fucking_hell="${except_inodes[*]}"
+    cache_file_path="$PWD/.${image//[^A-Za-z0-9_]/_}$base_inode${fucking_hell// }${base_only:+_}"
     if [[ -r $cache_file_path ]]; then
         source "$cache_file_path"
         cache_file_found=0
@@ -226,29 +233,33 @@ if [[ $calc_size ]]; then
         ((total_size += file_size))
         echo "$(b FSIZE) $(format_size $file_size) $(b FNAME) $file_name"
     done
-    dir_size=-1
-    for dir in "${dirs[@]}"; do
-        rlvl="$(echo "$dir" | cut -d/ -f1)"
-        dir_inode="$(echo "$dir" | cut -d/ -f3)"
-        if [[ $rlvl -eq 0 && $dir_size -ne -1 ]]; then
-            echo "$(b DSIZE) $(format_size $dir_size) $(b DNAME) $dir_name"
-            dir_name="$(echo "$dir" | cut -d/ -f2)"
-            dir_size=0
-        elif [[ $dir_size -eq -1 ]]; then
-            dir_name="$(echo "$dir" | cut -d/ -f2)"
-            dir_size=0
-        fi
-        IFS="$newline"
-        for file in ${dir_files[$dir_inode]}; do
-            file_inode="$(echo "$file" | cut -d/ -f2)"
-            file_size="$(istat -f "$image_fstype" -i "$image_format" "$image" "$file_inode" | grep '^size:' | cut -d' ' -f2)"
-            ((total_size += file_size))
-            ((dir_size += file_size))
-            #echo "FSIZE $file_size"
+    
+    if [[ ! $base_only ]]; then
+        dir_size=-1
+        for dir in "${dirs[@]}"; do
+            rlvl="$(echo "$dir" | cut -d/ -f1)"
+            dir_inode="$(echo "$dir" | cut -d/ -f3)"
+            if [[ $rlvl -eq 0 && $dir_size -ne -1 ]]; then
+                echo "$(b DSIZE) $(format_size $dir_size) $(b DNAME) $dir_name"
+                dir_name="$(echo "$dir" | cut -d/ -f2)"
+                dir_size=0
+            elif [[ $dir_size -eq -1 ]]; then
+                dir_name="$(echo "$dir" | cut -d/ -f2)"
+                dir_size=0
+            fi
+            IFS="$newline"
+            for file in ${dir_files[$dir_inode]}; do
+                file_inode="$(echo "$file" | cut -d/ -f2)"
+                file_size="$(istat -f "$image_fstype" -i "$image_format" "$image" "$file_inode" | grep '^size:' | cut -d' ' -f2)"
+                ((total_size += file_size))
+                ((dir_size += file_size))
+                #echo "FSIZE $file_size"
+            done
+            unset IFS
         done
-        unset IFS
-    done
-    [[ $dir_size -ne -1 ]] && echo "$(b DSIZE) $(format_size $dir_size) $(b DNAME) $dir_name"
+        [[ $dir_size -ne -1 ]] && echo "$(b DSIZE) $(format_size $dir_size) $(b DNAME) $dir_name"
+    fi
+    
     echo "$(b TSIZE) $(format_size $total_size)"
     
     [[ ! $quiet ]] && stopwatch
@@ -257,13 +268,13 @@ fi
 # Recover Base Files
 [[ $no_recover ]] && exit 0
 
-mkdir -p "$base_dir" || error -w 'PERMISSION DENIED'
+mkdir -p "$base_dir" || error -w 'UNABLE TO MAKE DIRECTORY'
 [[ ! $quiet ]] && echo "$(b MKDIR) ./$base_dir_name"
 
 for file in "${files[@]}"; do
     file_name="$(echo "$file" | cut -d/ -f1)"
     file_inode="$(echo "$file" | cut -d/ -f2)"
-    icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$base_dir/$file_name" || error -w 'PERMISSION DENIED'
+    icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$base_dir/$file_name" || error -w 'UNABLE TO RECOVER FILE'
     [[ ! $quiet ]] && echo "$(b RFILE) ./$base_dir_name/$file_name"
 done
 
@@ -286,7 +297,7 @@ for dir in "${dirs[@]}"; do
         done
         make_dir="$make_dir/$dir_name"
     fi
-    mkdir -p "$make_dir" || error -w 'PERMISSION DENIED'
+    mkdir -p "$make_dir" || error -w 'UNABLE TO MAKE DIRECTORY'
     [[ ! $quiet ]] && echo "$(b MKDIR) ${make_dir/#$PWD/.}"
     
     # Recover Directory Files
@@ -294,7 +305,7 @@ for dir in "${dirs[@]}"; do
     for file in ${dir_files[$dir_inode]}; do
         file_name="$(echo "$file" | cut -d/ -f1)"
         file_inode="$(echo "$file" | cut -d/ -f2)"
-        icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$make_dir/$file_name" || error -w 'PERMISSION DENIED'
+        icat -r -f "$image_fstype" -i "$image_format" "$image" "$file_inode" > "$make_dir/$file_name" || error -w 'UNABLE TO RECOVER FILE'
         [[ ! $quiet ]] && echo "$(b RFILE) ${make_dir/#$PWD/.}/$file_name"
     done
     unset IFS
