@@ -135,6 +135,7 @@ format_entry() {
     local name="${*#*$'\t'}"
     #echo -n "$rlvl$(echo "$*" | cut -f2)/$(echo "$*" | grep -Po '(?<=./. ).*(?=:\t)')"
     echo -n "$rlvl$name/$inode"
+    # sed -e 's/:.*//' -e 's/\+* *.\/. //'
 }
 
 # Catalogue Directories
